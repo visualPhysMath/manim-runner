@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       code:
-        description: "Paste your Manim code (Python)"
+        description: "Paste your Manim code (Python) — 改行が消える場合は \\n を使ってもOK"
         required: true
       scene:
         description: "Scene name (auto-detect if blank)"
@@ -36,14 +36,31 @@ jobs:
           docker --version
           docker info || true
 
-      - name: Write scene.py from input
+      # ★ 改行復元つきで scene.py を生成
+      - name: Write scene.py from input (newline-safe)
         shell: bash
+        env:
+          CODE: ${{ github.event.inputs.code }}
         run: |
-          cat > scene.py << 'PY'
-          ${{ github.event.inputs.code }}
-          PY
-          echo "---- scene.py (first 50 lines) ----"
-          sed -n '1,50p' scene.py || true
+          python - <<'PY'
+import os, re, sys
+code = os.environ.get("CODE","")
+
+# 1) もし全体が一行 or \n を含むなら、\n を実際の改行に展開
+looks_single_line = ("\n" not in code) and ("\\n" in code or " class " in code)
+if "\\n" in code or looks_single_line:
+    code = code.replace("\\r\\n","\n").replace("\\n","\n")
+
+# 2) 先頭や末尾の意図しない全角/スマート引用符などはそのまま保存（壊さない）
+open("scene.py","w",encoding="utf-8").write(code)
+
+# ダイジェスト出力
+lines = code.splitlines()
+preview = "\n".join(lines[: min(50, len(lines))])
+print("---- scene.py (first lines) ----")
+print(preview)
+print("---- end preview ----")
+PY
 
       - name: Detect scene name if empty
         id: detect
@@ -57,6 +74,13 @@ jobs:
           fi
           echo "scene=$SCN" >> "$GITHUB_OUTPUT"
           echo "Use Scene: $SCN"
+
+      # ★ Python文法チェック（ここで落ちれば原因がすぐわかる）
+      - name: Syntax check
+        shell: bash
+        run: |
+          python -m py_compile scene.py
+          echo "Syntax OK."
 
       - name: Pre-pull official image (Docker Hub)
         shell: bash
