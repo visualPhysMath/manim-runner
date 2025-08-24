@@ -30,6 +30,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docker diagnostics
+        shell: bash
+        run: |
+          docker --version
+          docker info || true
+
       - name: Write scene.py from input
         shell: bash
         run: |
@@ -52,15 +58,19 @@ jobs:
           echo "scene=$SCN" >> "$GITHUB_OUTPUT"
           echo "Use Scene: $SCN"
 
-      - name: Run Manim (official image, Cairo)
+      - name: Pre-pull official image (Docker Hub)
+        shell: bash
+        run: |
+          docker pull manimcommunity/manim:stable
+
+      - name: Run Manim (Cairo)
         shell: bash
         run: |
           set -e
           IFS="x" read -r W H <<<'${{ github.event.inputs.resolution }}'
-          # 公式イメージを直接実行（ビルド不要）
           docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g \
             -v "$PWD":/work -w /work \
-            ghcr.io/manimcommunity/manim:stable \
+            manimcommunity/manim:stable \
             bash -lc "python -m manim ${{ github.event.inputs.quality }} --renderer=cairo -r ${W},${H} scene.py ${{ steps.detect.outputs.scene }} -o ${{ github.event.inputs.outfile }}.mp4"
           echo "Outputs in media/:"
           find media -type f -name '*.mp4' | sed -n '1,10p'
