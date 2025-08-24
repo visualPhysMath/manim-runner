@@ -1,0 +1,96 @@
+name: Run Manim (paste code)
+
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: "Paste your Manim code (Python)"
+        required: true
+      scene:
+        description: "Scene name (auto-detect if blank)"
+        required: false
+        default: ""
+      quality:
+        description: "Quality (-ql/-qm/-qh/-qk)"
+        required: false
+        default: "-qm"
+      resolution:
+        description: "Resolution WxH (e.g., 1920x1080)"
+        required: false
+        default: "1920x1080"
+      outfile:
+        description: "Output base name (no extension)"
+        required: false
+        default: "result"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: local/manim-runner:latest
+
+      - name: Write scene.py from input
+        # GitHubのテキスト入力をそのままファイル化（改行OK）
+        run: |
+          cat > scene.py << 'PY'
+          ${{ github.event.inputs.code }}
+          PY
+          echo "---- scene.py (first 120 lines) ----"
+          sed -n '1,120p' scene.py || true
+
+      - name: Detect scene name if empty
+        id: detect
+        run: |
+          SCN="${{ github.event.inputs.scene }}"
+          if [ -z "$SCN" ]; then
+            SCN=$(python - << 'PY'
+import re
+code=open("scene.py","r",encoding="utf-8").read()
+m=re.findall(r"class\\s+(\\w+)\\s*\\((?:Scene|ThreeDScene)\\)\\s*:", code)
+print(m[0] if m else "MainScene")
+PY
+)
+          fi
+          echo "scene=$SCN" >> $GITHUB_OUTPUT
+          echo "Use Scene: $SCN"
+
+      - name: Run Manim (Cairo)
+        run: |
+          set -e
+          IFS="x" read -r W H <<<'${{ github.event.inputs.resolution }}'
+          docker run --rm --network none \
+            -v "$PWD":/work local/manim-runner:latest \
+            bash -lc "
+              cd /work
+              python -m manim ${{ github.event.inputs.quality }} --renderer=cairo -r ${W},${H} \
+                scene.py ${{ steps.detect.outputs.scene }} -o ${{ github.event.inputs.outfile }}.mp4
+            "
+          echo "Outputs in media/:"
+          find media -type f -name '*.mp4' | sed -n '1,10p'
+
+      - name: Collect MP4
+        run: |
+          mkdir -p outputs
+          MP4=$(find media -name '*.mp4' | head -n 1)
+          if [ -z "$MP4" ]; then
+            echo "No MP4 found"; exit 1
+          fi
+          cp "$MP4" "outputs/${{ github.event.inputs.outfile }}.mp4"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manim-video
+          path: outputs/*.mp4
