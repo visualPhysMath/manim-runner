@@ -1,13 +1,14 @@
-name: Run Manim (paste code)
+name: Run Manim (by file)
 
 on:
   workflow_dispatch:
     inputs:
-      code:
-        description: "Paste your Manim code (Python). If it becomes one line, use \\n."
+      filepath:
+        description: "Path to Python scene file in repo (e.g., scenes/hello.py)"
         required: true
+        default: "scenes/hello.py"
       scene:
-        description: "Scene name (auto-detect if blank)"
+        description: "Scene class name (leave blank to auto-detect; fallback=MainScene)"
         required: false
         default: ""
       quality:
@@ -17,9 +18,9 @@ on:
       resolution:
         description: "Resolution WxH (e.g., 1920x1080)"
         required: false
-        default: "1920x1080"
+        default: "1280x720"
       outfile:
-        description: "Output base name (no extension)"
+        description: "Output file base name (no extension)"
         required: false
         default: "result"
 
@@ -27,49 +28,68 @@ jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Docker diagnostics
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Docker diagnostics
         shell: bash
         run: |
           docker --version
           docker info || true
 
-      # 改行が潰れたときは \n を展開。複数行で来たときはそのまま保存
-      - name: Write scene.py from input (newline-safe, no heredoc)
+      - name: Validate inputs and file existence
+        id: validate
         shell: bash
-        env:
-          CODE: ${{ github.event.inputs.code }}
         run: |
-          if printf %s "$CODE" | grep -q $'\n'; then
-            printf '%s' "$CODE" > scene.py
-          else
-            printf '%b' "$CODE" > scene.py
+          set -e
+          FP="${{ github.event.inputs.filepath }}"
+          if [ -z "$FP" ]; then
+            echo "❌ filepath is empty"; exit 2
           fi
-          echo "---- scene.py (first 50 lines) ----"
-          sed -n '1,50p' scene.py || true
+          if [ ! -f "$FP" ]; then
+            echo "❌ File not found: $FP"; ls -R; exit 3
+          fi
+          if [ ! -s "$FP" ]; then
+            echo "❌ File is empty: $FP"; exit 4
+          fi
+          echo "filepath=$FP" >> "$GITHUB_OUTPUT"
+          echo "✅ Found file: $FP"
 
-      - name: Detect scene name if empty
+      - name: Auto-detect scene name (if blank)
         id: detect
         shell: bash
         run: |
-          SCN="${{ github.event.inputs.scene }}"
-          if [ -z "$SCN" ]; then
-            SCN=$(grep -Eo 'class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\((Scene|ThreeDScene)\)' scene.py \
-              | head -n 1 | sed -E 's/class[[:space:]]+([A-Za-z0-9_]+).*/\1/')
-            [ -z "$SCN" ] && SCN=MainScene
-          fi
-          echo "scene=$SCN" >> "$GITHUB_OUTPUT"
-          echo "Use Scene: $SCN"
+          set -e
+          SCN_IN="${{ github.event.inputs.scene }}"
+          FP="${{ steps.validate.outputs.filepath }}"
 
-      - name: Syntax check
+          if [ -n "$SCN_IN" ]; then
+            SCN="$SCN_IN"
+          else
+            # class Xxx(Scene|ThreeDScene) から最初のXxxを抽出
+            SCN=$(grep -Eo 'class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\((Scene|ThreeDScene)\)' "$FP" \
+                  | head -n 1 \
+                  | sed -E 's/class[[:space:]]+([A-Za-z0-9_]+).*/\1/')
+            if [ -z "$SCN" ]; then
+              SCN="MainScene"
+              echo "ℹ️  Scene not found; fallback to MainScene"
+            fi
+          fi
+
+          echo "scene=$SCN" >> "$GITHUB_OUTPUT"
+          echo "✅ Use Scene: $SCN"
+
+      - name: Syntax check (py_compile)
         shell: bash
         run: |
-          python -m py_compile scene.py
-          echo "Syntax OK."
+          set -e
+          FP="${{ steps.validate.outputs.filepath }}"
+          python3 -m py_compile "$FP"
+          echo "✅ Syntax OK for $FP"
 
-      - name: Pre-pull official image (Docker Hub)
+      - name: Pull official Manim image (Docker Hub)
         shell: bash
         run: |
           docker pull manimcommunity/manim:stable
@@ -78,23 +98,39 @@ jobs:
         shell: bash
         run: |
           set -e
-          IFS="x" read -r W H <<<'${{ github.event.inputs.resolution }}'
+          FP="${{ steps.validate.outputs.filepath }}"
+          SCN="${{ steps.detect.outputs.scene }}"
+          Q="${{ github.event.inputs.quality }}"
+          RES="${{ github.event.inputs.resolution }}"
+          OUT="${{ github.event.inputs.outfile }}"
+          # 解像度パース（安全側）
+          if ! echo "$RES" | grep -Eq '^[0-9]+x[0-9]+$'; then
+            echo "❌ Invalid resolution format: $RES (expected WxH, e.g., 1920x1080)"
+            exit 5
+          fi
+          IFS="x" read -r W H <<<"$RES"
+
+          # 実行（ネットワーク遮断＆権限低減）
           docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g \
             -v "$PWD":/work -w /work \
             manimcommunity/manim:stable \
-            bash -lc "python -m manim ${{ github.event.inputs.quality }} --renderer=cairo -r ${W},${H} scene.py ${{ steps.detect.outputs.scene }} -o ${{ github.event.inputs.outfile }}.mp4"
-          echo "Outputs in media/:"
-          find media -type f -name '*.mp4' | sed -n '1,10p'
+            bash -lc "python -m manim ${Q} --renderer=cairo -r ${W},${H} \"$FP\" \"$SCN\" -o \"${OUT}.mp4\""
 
-      - name: Collect MP4
+          echo "---- Generated files (media/) preview ----"
+          find media -type f -name '*.mp4' | sed -n '1,10p' || true
+
+      - name: Collect MP4 and upload artifact
         shell: bash
         run: |
+          set -e
+          OUT="${{ github.event.inputs.outfile }}"
           mkdir -p outputs
           MP4=$(find media -name '*.mp4' | head -n 1)
           if [ -z "$MP4" ]; then
-            echo "No MP4 found"; exit 1
+            echo "❌ No MP4 found under media/"; find media -maxdepth 3 -type f | sed -n '1,50p'; exit 6
           fi
-          cp "$MP4" "outputs/${{ github.event.inputs.outfile }}.mp4"
+          cp "$MP4" "outputs/${OUT}.mp4"
+          echo "✅ Saved outputs/${OUT}.mp4"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
