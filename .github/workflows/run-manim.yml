@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       code:
-        description: "Paste your Manim code (Python) — 改行が消える場合は \\n を使ってもOK"
+        description: "Paste your Manim code (Python). If it becomes one line, use \\n."
         required: true
       scene:
         description: "Scene name (auto-detect if blank)"
@@ -36,31 +36,19 @@ jobs:
           docker --version
           docker info || true
 
-      # ★ 改行復元つきで scene.py を生成
-      - name: Write scene.py from input (newline-safe)
+      # 改行が潰れたときは \n を展開。複数行で来たときはそのまま保存
+      - name: Write scene.py from input (newline-safe, no heredoc)
         shell: bash
         env:
           CODE: ${{ github.event.inputs.code }}
         run: |
-          python - <<'PY'
-import os, re, sys
-code = os.environ.get("CODE","")
-
-# 1) もし全体が一行 or \n を含むなら、\n を実際の改行に展開
-looks_single_line = ("\n" not in code) and ("\\n" in code or " class " in code)
-if "\\n" in code or looks_single_line:
-    code = code.replace("\\r\\n","\n").replace("\\n","\n")
-
-# 2) 先頭や末尾の意図しない全角/スマート引用符などはそのまま保存（壊さない）
-open("scene.py","w",encoding="utf-8").write(code)
-
-# ダイジェスト出力
-lines = code.splitlines()
-preview = "\n".join(lines[: min(50, len(lines))])
-print("---- scene.py (first lines) ----")
-print(preview)
-print("---- end preview ----")
-PY
+          if printf %s "$CODE" | grep -q $'\n'; then
+            printf '%s' "$CODE" > scene.py
+          else
+            printf '%b' "$CODE" > scene.py
+          fi
+          echo "---- scene.py (first 50 lines) ----"
+          sed -n '1,50p' scene.py || true
 
       - name: Detect scene name if empty
         id: detect
@@ -75,7 +63,6 @@ PY
           echo "scene=$SCN" >> "$GITHUB_OUTPUT"
           echo "Use Scene: $SCN"
 
-      # ★ Python文法チェック（ここで落ちれば原因がすぐわかる）
       - name: Syntax check
         shell: bash
         run: |
