@@ -103,21 +103,22 @@ jobs:
           Q="${{ github.event.inputs.quality }}"
           RES="${{ github.event.inputs.resolution }}"
           OUT="${{ github.event.inputs.outfile }}"
-          # 解像度パース（安全側）
           if ! echo "$RES" | grep -Eq '^[0-9]+x[0-9]+$'; then
-            echo "❌ Invalid resolution format: $RES (expected WxH, e.g., 1920x1080)"
-            exit 5
+            echo "❌ Invalid resolution format: $RES (expected WxH)"; exit 5
           fi
           IFS="x" read -r W H <<<"$RES"
 
-          # 実行（ネットワーク遮断＆権限低減）
-          docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g \
+          UIDGID="$(id -u):$(id -g)"
+
+          docker run --rm --network none --pids-limit=256 -m 2g \
+            -u "$UIDGID" \
             -v "$PWD":/work -w /work \
             manimcommunity/manim:stable \
             bash -lc "python -m manim ${Q} --renderer=cairo -r ${W},${H} \"$FP\" \"$SCN\" -o \"${OUT}.mp4\""
 
           echo "---- Generated files (media/) preview ----"
           find media -type f -name '*.mp4' | sed -n '1,10p' || true
+
 
       - name: Collect MP4 and upload artifact
         shell: bash
