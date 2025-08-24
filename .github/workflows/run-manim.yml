@@ -27,7 +27,6 @@ jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +44,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Write scene.py from input
+        shell: bash
         run: |
           cat > scene.py << 'PY'
           ${{ github.event.inputs.code }}
@@ -58,29 +58,23 @@ jobs:
         run: |
           SCN="${{ github.event.inputs.scene }}"
           if [ -z "$SCN" ]; then
-            SCN=$(grep -Eo 'class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\((Scene|ThreeDScene)\)' scene.py \
-              | head -n 1 \
-              | sed -E 's/class[[:space:]]+([A-Za-z0-9_]+).*/\1/')
+            SCN=$(grep -Eo 'class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\((Scene|ThreeDScene)\)' scene.py | head -n 1 | sed -E 's/class[[:space:]]+([A-Za-z0-9_]+).*/\1/')
             [ -z "$SCN" ] && SCN=MainScene
           fi
           echo "scene=$SCN" >> "$GITHUB_OUTPUT"
           echo "Use Scene: $SCN"
 
       - name: Run Manim (Cairo)
+        shell: bash
         run: |
           set -e
           IFS="x" read -r W H <<<'${{ github.event.inputs.resolution }}'
-          docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g \
-            -v "$PWD":/work local/manim-runner:latest \
-            bash -lc "
-              cd /work
-              python -m manim ${{ github.event.inputs.quality }} --renderer=cairo -r ${W},${H} \
-                scene.py ${{ steps.detect.outputs.scene }} -o ${{ github.event.inputs.outfile }}.mp4
-            "
+          docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g -v "$PWD":/work local/manim-runner:latest bash -lc "cd /work && python -m manim ${{ github.event.inputs.quality }} --renderer=cairo -r ${W},${H} scene.py ${{ steps.detect.outputs.scene }} -o ${{ github.event.inputs.outfile }}.mp4"
           echo "Outputs in media/:"
           find media -type f -name '*.mp4' | sed -n '1,10p'
 
       - name: Collect MP4
+        shell: bash
         run: |
           mkdir -p outputs
           MP4=$(find media -name '*.mp4' | head -n 1)
