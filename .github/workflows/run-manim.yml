@@ -27,6 +27,7 @@ jobs:
   render:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v4
 
@@ -40,37 +41,36 @@ jobs:
           file: docker/Dockerfile
           push: false
           tags: local/manim-runner:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Write scene.py from input
-        # GitHubのテキスト入力をそのままファイル化（改行OK）
         run: |
           cat > scene.py << 'PY'
           ${{ github.event.inputs.code }}
           PY
-          echo "---- scene.py (first 120 lines) ----"
-          sed -n '1,120p' scene.py || true
+          echo "---- scene.py (first 50 lines) ----"
+          sed -n '1,50p' scene.py || true
 
       - name: Detect scene name if empty
         id: detect
+        shell: bash
         run: |
           SCN="${{ github.event.inputs.scene }}"
           if [ -z "$SCN" ]; then
-            SCN=$(python - << 'PY'
-import re
-code=open("scene.py","r",encoding="utf-8").read()
-m=re.findall(r"class\\s+(\\w+)\\s*\\((?:Scene|ThreeDScene)\\)\\s*:", code)
-print(m[0] if m else "MainScene")
-PY
-)
+            SCN=$(grep -Eo 'class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\((Scene|ThreeDScene)\)' scene.py \
+              | head -n 1 \
+              | sed -E 's/class[[:space:]]+([A-Za-z0-9_]+).*/\1/')
+            [ -z "$SCN" ] && SCN=MainScene
           fi
-          echo "scene=$SCN" >> $GITHUB_OUTPUT
+          echo "scene=$SCN" >> "$GITHUB_OUTPUT"
           echo "Use Scene: $SCN"
 
       - name: Run Manim (Cairo)
         run: |
           set -e
           IFS="x" read -r W H <<<'${{ github.event.inputs.resolution }}'
-          docker run --rm --network none \
+          docker run --rm --network none --cap-drop=ALL --pids-limit=256 -m 2g \
             -v "$PWD":/work local/manim-runner:latest \
             bash -lc "
               cd /work
@@ -94,3 +94,4 @@ PY
         with:
           name: manim-video
           path: outputs/*.mp4
+          retention-days: 30
